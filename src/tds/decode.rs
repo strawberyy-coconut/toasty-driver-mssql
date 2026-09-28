@@ -121,6 +121,11 @@ fn coerce(value: stmt::Value, expected: &stmt::Type) -> Result<stmt::Value> {
                 Error::unsupported_feature(format!("{value} is not a representable instant"))
             })?,
         ),
+        // A `datetimeoffset` column decodes to a zoned value, so a field that
+        // wants only the instant — a `jiff::Timestamp` carrying an explicit
+        // `#[column(type = "DATETIMEOFFSET")]` — is narrowed here. The offset is
+        // dropped, because the field has nowhere to put it.
+        (stmt::Value::Zoned(value), Type::Timestamp) => stmt::Value::Timestamp(value.timestamp()),
 
         // A temporal value stored in a text column round-trips through its ISO
         // form.

@@ -237,8 +237,9 @@ pub(crate) fn decode(value: &ColumnValues) -> Option<stmt::Value> {
         // `mssql-tds` normalises the time part of a `DATETIMEOFFSET` to UTC and
         // keeps the original offset beside it, so the offset must not be applied
         // again to recover the instant. It decodes to a zoned value, which is
-        // what the column's offset makes it; a `Timestamp` field recasts it to
-        // an instant through the engine.
+        // what the column's offset makes it; a field that wants only the instant
+        // — or only text — is narrowed by the storage bridge in
+        // [`super::decode`].
         ColumnValues::DateTimeOffset(value) => {
             stmt::Value::Zoned(zoned_from_datetimeoffset(value)?)
         }

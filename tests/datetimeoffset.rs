@@ -151,3 +151,59 @@ async fn ordering_the_column_is_chronological() {
         "the text form should sort the later instant first: {as_text:?}"
     );
 }
+
+/// A `jiff::Timestamp` field can name the column directly with the escape hatch,
+/// because a quoted type name is a `db::Type::Custom` and the macro's
+/// compatibility check does not apply.
+///
+/// The field keeps only the instant — the offset is always `+00:00` — but the
+/// column is a real `datetimeoffset`. Reading it back has to narrow the zoned
+/// value the column returns to the instant the field holds; without that bridge
+/// the field is write-only, which is what this pins.
+#[tokio::test]
+async fn a_timestamp_field_can_name_the_column_directly() {
+    #[derive(Debug, toasty::Model)]
+    struct Ingest {
+        #[key]
+        id: i64,
+
+        #[column(type = "DATETIMEOFFSET")]
+        inserted_at: Timestamp,
+    }
+
+    let context = common::context("toasty_datetimeoffset_timestamp");
+    let driver = Mssql::new(context.clone());
+    driver.reset_db().await.expect("reset_db must succeed");
+
+    let mut db = toasty::Db::builder()
+        .models(toasty::models!(Ingest))
+        .build(driver)
+        .await
+        .expect("build must succeed");
+
+    db.push_schema().await.expect("push_schema must succeed");
+
+    assert_server(
+        &context,
+        "EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS \
+         WHERE TABLE_NAME = 'ingests' AND COLUMN_NAME = 'inserted_at' \
+         AND DATA_TYPE = 'datetimeoffset')",
+        "the column should be datetimeoffset",
+    )
+    .await;
+
+    let instant: Timestamp = "2021-06-15T18:30:00Z".parse().unwrap();
+
+    Ingest::create()
+        .id(1)
+        .inserted_at(instant)
+        .exec(&mut db)
+        .await
+        .expect("insert must succeed");
+
+    let read = Ingest::get_by_id(&mut db, &1)
+        .await
+        .expect("read must succeed");
+
+    assert_eq!(read.inserted_at, instant);
+}
