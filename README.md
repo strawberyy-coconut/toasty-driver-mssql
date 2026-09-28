@@ -45,7 +45,7 @@ db.push_schema().await?;
 ```toml
 [dependencies]
 toasty = { version = "0.11", default-features = false }
-toasty-driver-mssql = { path = "..." }
+toasty-driver-mssql = { git = "https://github.com/strawberyy-coconut/toasty-driver-mssql.git" }
 ```
 
 ### Connecting
