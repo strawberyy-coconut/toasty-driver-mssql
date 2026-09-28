@@ -1,0 +1,102 @@
+[package]
+name = "toasty-driver-mssql"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Proof-of-concept Toasty driver for Microsoft SQL Server, speaking TDS directly via mssql-tds."
+license = "MIT OR Apache-2.0"
+
+# `old-sqlx/` is a read-only reference copy of the sqlx MSSQL driver. It declares
+# its own `[workspace]`, so keep it out of this one.
+[workspace]
+exclude = ["old-sqlx"]
+
+[features]
+default = []
+
+# Internal: the trait modules extend `toasty::stmt::Path`, so they need the
+# `toasty` crate. The wire format in `src/funcs.rs` does not, and is always
+# compiled because the renderer has to recognise a carried call.
+toasty = ["dep:toasty"]
+
+# Model-facing wrappers for SQL Server's `geometry` and `geography` columns,
+# and the methods on them. `geo-types` is what the shapes are expressed in; SQL
+# Server's own serialization of them is in `src/spatial/codec.rs`.
+spatial = ["toasty", "dep:geo-types"]
+
+# SQL Server's built-in functions, one feature per category of Microsoft's own
+# reference (https://learn.microsoft.com/en-us/sql/t-sql/functions/functions).
+# They are separate so that a caller who wants JSON validation does not also get
+# the date and math vocabulary offered on every string path. All four need
+# `toasty`, so the split changes what is *offered*, not what is compiled.
+funcs-json = ["toasty"]
+funcs-string = ["toasty"]
+funcs-math = ["toasty"]
+# The one category that needs more from `toasty` than `dep:toasty`: the methods
+# are implemented for the `jiff` temporal types, which `toasty` re-exports only
+# under its own `jiff` feature.
+funcs-date = ["toasty", "toasty/jiff"]
+
+# All of them. Spatial methods are not included: they come with `spatial`, which
+# needs `geo-types` as well.
+funcs = ["funcs-json", "funcs-string", "funcs-math", "funcs-date"]
+
+[[test]]
+name = "geo"
+required-features = ["spatial"]
+
+[[test]]
+name = "funcs"
+required-features = ["funcs"]
+
+# `crud` needs no features; the other two demonstrate the features that carry
+# what they call. `migrations` needs none either — it gets what it calls from
+# the `toasty-cli` dev-dependency.
+[[example]]
+name = "functions"
+required-features = ["funcs"]
+
+[[example]]
+name = "spatial"
+required-features = ["spatial"]
+
+[dependencies]
+async-trait = "0.1"
+bigdecimal = "0.4"
+jiff = { version = "0.2", default-features = false, features = ["std"] }
+rust_decimal = "1"
+# Only used by the `spatial` feature, for the `Field` trait the model macro
+# expands every field through.
+toasty = { version = "0.11.0", default-features = false, optional = true }
+# Only used by the `spatial` feature, as the shape type the spatial wrappers
+# convert to and from.
+geo-types = { version = "0.7", optional = true }
+toasty-core = { version = "0.11.0", features = ["bigdecimal", "jiff", "net", "rust_decimal"] }
+# Its schema diff engine, its DDL statement AST, and its JSON codec for
+# `Vec<scalar>` columns; the T-SQL rendering is this driver's own. The feature
+# list mirrors `toasty-core`'s so the JSON codec knows every scalar this driver
+# stores as document text.
+toasty-sql = { version = "0.11.0", features = ["bigdecimal", "jiff", "net", "rust_decimal"] }
+tracing = "0.1"
+uuid = "1"
+
+# Microsoft's TDS client. Pinned to the revision the reference driver in
+# `old-sqlx/Cargo.lock` resolves to, so the API surface is known.
+mssql-tds = { git = "https://github.com/microsoft/mssql-rs", rev = "3248bcef5835ad93b907b231a92cfada81abe11a", default-features = false }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "sync"] }
+
+[dev-dependencies]
+anyhow = "1"
+async-trait = "0.1"
+bigdecimal = "0.4"
+hashbrown = { version = "0.17", features = ["serde"] }
+jiff = "0.2"
+rust_decimal = "1"
+serde_json = "1"
+# `migration` pulls in the history/snapshot types the `migrations` example reads
+# back; `toasty-cli` is what renders and applies them.
+toasty = { version = "0.11.0", default-features = false, features = ["migration"] }
+toasty-cli = "0.11.0"
+toasty-driver-integration-suite = "0.11.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+uuid = "1"
