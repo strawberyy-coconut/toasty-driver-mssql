@@ -41,6 +41,21 @@ pub(crate) fn bind_value(value: &stmt::Value, ty: &db::Type) -> Result<SqlType> 
     // let SQL Server convert it to the column, which is what carries a
     // `varbinary(max)` payload into a `geometry` column and WKT text into one
     // too.
+    //
+    // `datetimeoffset` is the exception: it keeps the value's own offset, so a
+    // zoned value travels as a temporal parameter rather than the `[IANA]`-tagged
+    // text the escape hatch would otherwise send, which the server rejects.
+    if let (stmt::Value::Zoned(value), db::Type::Custom(name)) = (value, ty)
+        && super::temporal::is_datetimeoffset(name)
+    {
+        return match super::temporal::bind_datetimeoffset(value) {
+            Some(value) => Ok(SqlType::DateTimeOffset(Some(value))),
+            None => Err(Error::unsupported_feature(
+                "SQL Server driver cannot bind this jiff::Zoned as DATETIMEOFFSET",
+            )),
+        };
+    }
+
     if matches!(ty, db::Type::Custom(_))
         && let Some(natural) = natural_type(value)
     {

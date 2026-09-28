@@ -24,6 +24,12 @@ toasty = ["dep:toasty"]
 # Server's own serialization of them is in `src/spatial/codec.rs`.
 spatial = ["toasty", "dep:geo-types"]
 
+# A model-facing wrapper for SQL Server's `datetimeoffset` column type, which
+# carries an instant together with the offset it is displayed in — the one thing
+# neither `jiff::Timestamp` (bare instant) nor `jiff::Zoned` (text) can use a
+# temporal column for.
+datetimeoffset = ["toasty"]
+
 # SQL Server's built-in functions, one feature per category of Microsoft's own
 # reference (https://learn.microsoft.com/en-us/sql/t-sql/functions/functions).
 # They are separate so that a caller who wants JSON validation does not also get
@@ -44,6 +50,10 @@ funcs = ["funcs-json", "funcs-string", "funcs-math", "funcs-date"]
 [[test]]
 name = "geo"
 required-features = ["spatial"]
+
+[[test]]
+name = "datetimeoffset"
+required-features = ["datetimeoffset"]
 
 [[test]]
 name = "funcs"

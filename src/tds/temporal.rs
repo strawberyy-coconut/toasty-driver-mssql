@@ -9,11 +9,13 @@
 //! `sqlx-mssql-rs` driver that ships in `old-sqlx/`.
 
 use jiff::{
-    Timestamp,
+    Timestamp, Zoned,
     civil::{Date, DateTime, Time},
-    tz::TimeZone,
+    tz::{Offset, TimeZone},
 };
-use mssql_tds::datatypes::column_values::{ColumnValues, SqlDate, SqlDateTime2, SqlTime};
+use mssql_tds::datatypes::column_values::{
+    ColumnValues, SqlDate, SqlDateTime2, SqlDateTimeOffset, SqlTime,
+};
 
 use toasty_core::{Result, stmt};
 
@@ -163,6 +165,44 @@ pub(crate) fn timestamp_from_utc_datetime(value: DateTime) -> Option<Timestamp> 
         .map(|zoned| zoned.timestamp())
 }
 
+/// The column type name this driver recognises as SQL Server's
+/// `datetimeoffset`.
+///
+/// `db::Type` has no offset variant, so a `Zoned` field reaches this column
+/// type through `db::Type::Custom`, either from the driver's own
+/// [`MssqlDateTimeOffset`](crate::MssqlDateTimeOffset) or from an explicit
+/// `#[column(type = "DATETIMEOFFSET")]`.
+pub(crate) const DATETIMEOFFSET: &str = "datetimeoffset";
+
+/// Whether a `db::Type::Custom` name is this driver's `datetimeoffset`.
+pub(crate) fn is_datetimeoffset(name: &str) -> bool {
+    name.eq_ignore_ascii_case(DATETIMEOFFSET)
+}
+
+/// Binds a zoned value as a `datetimeoffset` parameter.
+///
+/// The value's own offset is kept, because `mssql-tds` pairs a UTC-normalised
+/// `datetime2` with the offset that applied at that instant — the same pairing
+/// it hands back when decoding.
+pub(crate) fn bind_datetimeoffset(value: &Zoned) -> Option<SqlDateTimeOffset> {
+    Some(SqlDateTimeOffset {
+        datetime2: datetime2_from_jiff(utc_datetime(value.timestamp()))?,
+        offset: i16::try_from(value.offset().seconds() / 60).ok()?,
+    })
+}
+
+/// Reads a `DATETIMEOFFSET` back as a zoned value.
+///
+/// `mssql-tds` normalises the time part to UTC and keeps the original offset
+/// beside it, so the offset must not be applied again to recover the instant;
+/// it is reattached as a fixed-offset zone, which is all the column carries.
+fn zoned_from_datetimeoffset(value: &SqlDateTimeOffset) -> Option<Zoned> {
+    let instant = timestamp_from_utc_datetime(datetime_from_datetime2(&value.datetime2)?)?;
+    let offset = Offset::from_seconds(i32::from(value.offset) * 60).ok()?;
+
+    Some(instant.to_zoned(TimeZone::fixed(offset)))
+}
+
 /// Converts an application-level temporal value into the TDS value to bind.
 pub(crate) fn bind(value: &stmt::Value) -> Option<mssql_tds::datatypes::sqltypes::SqlType> {
     use mssql_tds::datatypes::sqltypes::SqlType;
@@ -176,8 +216,9 @@ pub(crate) fn bind(value: &stmt::Value) -> Option<mssql_tds::datatypes::sqltypes
             SqlType::Date(Some(SqlDate::create(days_from_date(*value).ok()?).ok()?))
         }
         stmt::Value::Time(value) => SqlType::Time(Some(time_from_jiff(*value)?)),
-        // A timezone-aware value is stored as text by default, so it binds as a
-        // string rather than a temporal type.
+        // A zoned value has no temporal column type of its own: it binds as
+        // `datetimeoffset` only where the column says so (`bind_datetimeoffset`),
+        // and travels as text everywhere else.
         stmt::Value::Zoned(_) => return None,
         _ => return None,
     };
@@ -195,10 +236,12 @@ pub(crate) fn decode(value: &ColumnValues) -> Option<stmt::Value> {
         ColumnValues::DateTime2(value) => stmt::Value::DateTime(datetime_from_datetime2(value)?),
         // `mssql-tds` normalises the time part of a `DATETIMEOFFSET` to UTC and
         // keeps the original offset beside it, so the offset must not be applied
-        // again to recover the instant.
-        ColumnValues::DateTimeOffset(value) => stmt::Value::Timestamp(timestamp_from_utc_datetime(
-            datetime_from_datetime2(&value.datetime2)?,
-        )?),
+        // again to recover the instant. It decodes to a zoned value, which is
+        // what the column's offset makes it; a `Timestamp` field recasts it to
+        // an instant through the engine.
+        ColumnValues::DateTimeOffset(value) => {
+            stmt::Value::Zoned(zoned_from_datetimeoffset(value)?)
+        }
         _ => return None,
     };
 
@@ -216,6 +259,7 @@ pub(crate) fn null_value(
         db::Type::Date => SqlType::Date(None),
         db::Type::Time(_) => SqlType::Time(None),
         db::Type::Timestamp(_) | db::Type::DateTime(_) => SqlType::DateTime2(None),
+        db::Type::Custom(name) if is_datetimeoffset(name) => SqlType::DateTimeOffset(None),
         _ => return None,
     };
 
@@ -256,5 +300,30 @@ mod tests {
         let sql_value = datetime2_from_jiff(datetime).expect("datetime must convert");
 
         assert_eq!(datetime_from_datetime2(&sql_value).unwrap(), datetime);
+    }
+
+    #[test]
+    fn recognises_the_datetimeoffset_column_name() {
+        assert!(is_datetimeoffset("DATETIMEOFFSET"));
+        assert!(is_datetimeoffset("datetimeoffset"));
+        assert!(!is_datetimeoffset("DATETIME2"));
+    }
+
+    #[test]
+    fn datetimeoffsets_keep_the_instant_and_the_offset_but_not_the_zone() {
+        let zoned: Zoned = "2021-06-15T14:30:00-04:00[America/New_York]"
+            .parse()
+            .expect("a valid zoned value");
+
+        let sql_value = bind_datetimeoffset(&zoned).expect("must convert to datetimeoffset");
+        assert_eq!(sql_value.offset, -4 * 60);
+
+        let back = zoned_from_datetimeoffset(&sql_value).expect("must convert back");
+
+        // The instant and the offset survive; the IANA name does not, because
+        // the column type has no field for it.
+        assert_eq!(back.timestamp(), zoned.timestamp());
+        assert_eq!(back.offset(), zoned.offset());
+        assert_ne!(back.to_string(), zoned.to_string());
     }
 }

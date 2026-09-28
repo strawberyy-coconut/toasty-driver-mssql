@@ -33,6 +33,8 @@
 //!
 //! * `spatial` — `geometry` and `geography` columns, and the methods that
 //!   operate on them.
+//! * `datetimeoffset` — [`MssqlDateTimeOffset`], which stores an instant with
+//!   the offset it is displayed in a `datetimeoffset` column.
 //! * `funcs-json`, `funcs-string`, `funcs-math`, `funcs-date` — SQL Server's
 //!   built-in functions as extension traits, one Cargo feature per Microsoft
 //!   [category][cats]; `funcs` turns on all four. The `funcs` module documents
@@ -45,6 +47,8 @@
 pub mod capability;
 
 mod connection;
+#[cfg(feature = "datetimeoffset")]
+pub mod datetime_offset;
 mod driver;
 mod funcs;
 mod migration;
@@ -66,6 +70,8 @@ pub use mssql_tds::connection::client_context::ClientContext;
 /// The encryption settings inside a [`ClientContext`], and the modes they take.
 pub use mssql_tds::core::{EncryptionOptions, EncryptionSetting};
 
+#[cfg(feature = "datetimeoffset")]
+pub use datetime_offset::MssqlDateTimeOffset;
 pub use driver::Mssql;
 #[cfg(feature = "funcs-date")]
 pub use funcs::DatePart;

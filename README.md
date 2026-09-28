@@ -184,6 +184,7 @@ the query engine and response handling — is Toasty's.
 | `src/sql/ddl.rs` | `CREATE TABLE` / `CREATE INDEX` |
 | `src/migration.rs` | Schema diff → T-SQL, via `toasty_sql`'s diff engine |
 | `src/spatial/mod.rs` | `MssqlGeometry` / `MssqlGeography`, model-facing (`spatial` feature) |
+| `src/datetime_offset.rs` | `MssqlDateTimeOffset`, model-facing (`datetimeoffset` feature) |
 | `src/spatial/codec.rs` | SQL Server's spatial serialization, MS-SSCLRT |
 | `src/funcs.rs` | The wire format that carries a function call through Toasty's AST |
 | `src/funcs/json.rs` | `MssqlJson`: JSON functions (`funcs-json`) |
@@ -236,6 +237,7 @@ handful of things neither can answer, and the targets below are for those.
 | `--test migration` | that generated migration SQL runs, and applies atomically |
 | `--test locking` | the row-lock hint's effect, with two connections |
 | `--features spatial --test geo` | that SQL Server accepts bytes this encoder produced, and that every spatial method is accepted |
+| `--features datetimeoffset --test datetimeoffset` | that the column is a `datetimeoffset`, that the offset survives the round trip, and that ordering it is chronological |
 | `--features funcs --test funcs` | that SQL Server accepts every supplied function, and answers the right rows |
 
 `tests/locking.rs` needs two connections: it holds a lock in one transaction and
@@ -277,7 +279,7 @@ Working, covered by the integration tests and the published conformance suite
 - scalar types: `bool`, all integer widths (including `u64` up to `i64::MAX`, as
   `DECIMAL(20, 0)`), `f32`/`f64`, `String`, `Vec<u8>`, `Uuid`, `DECIMAL`/
   `NUMERIC` (including `bigdecimal` and `rust_decimal`), and the `jiff` temporal
-  types as `DATE`, `TIME`, `DATETIME2`, `DATETIMEOFFSET`
+  types as `DATE`, `TIME` and `DATETIME2`
 - `Vec<scalar>` fields and `#[document]` embeds, both stored as JSON text in an
   `NVARCHAR(MAX)` column — the same fallback MySQL and SQLite use. Membership is
   an `OPENJSON` enumeration forced to a binary collation, and a document leaf is
@@ -290,6 +292,9 @@ Working, covered by the integration tests and the published conformance suite
   `NVARCHAR`, because SQL Server has no such column type
 - with the `spatial` feature, `geometry` and `geography` columns, including a
   conversion to and from `geo_types` (see [Spatial data](#spatial-data))
+- with the `datetimeoffset` feature, `MssqlDateTimeOffset` in a `datetimeoffset`
+  column, which keeps the offset and orders chronologically (see
+  [Timezone-aware values](#timezone-aware-values))
 
 Not implemented, each returning `unsupported_feature` rather than producing
 wrong SQL:
@@ -342,6 +347,15 @@ Notes:
   sensitivity as a plain column.
 - Documents are stored as text, so a filter on a document path has no index
   behind it: SQL Server indexes JSON paths only through a computed column.
+- A `Zoned` value is stored as `NVARCHAR` text: Toasty's `db::Type` has no
+  offset variant, and Toasty itself documents that a zoned value round-trips
+  through text on every SQL backend, because no column type carries an IANA zone
+  name. That is a hazard rather than a neutral fallback — an offset-bearing ISO
+  8601 string does not sort or compare chronologically, so `ORDER BY` and range
+  filters over the column are lexicographic and can disagree with the clock. For
+  a temporal column use `jiff::Timestamp` (UTC, `DATETIME2(6)`), or
+  `MssqlDateTimeOffset` when the offset itself matters (see
+  [Timezone-aware values](#timezone-aware-values)).
 
 ## Spatial data
 
@@ -387,6 +401,48 @@ bytes are still exactly the server's.
 Spatial *querying* works where the other shape is a literal:
 `shape().st_distance("POINT(6 2)", 0)` renders
 `[shape].STDistance(geometry::STGeomFromText(N'POINT(6 2)', 0))`.
+
+## Timezone-aware values
+
+`jiff::Zoned` is text on every Toasty backend, because no SQL column type carries
+an IANA zone name — Toasty's own guide says so, and it rejects a `Zoned` leaf in a
+`#[document]` rather than drop the annotation. Text storage has a cost the type
+does not show: an offset-bearing ISO 8601 string compares and sorts by its
+characters, not by the clock.
+
+SQL Server *does* have a column type for "an instant and the offset it is
+displayed in", so the `datetimeoffset` feature supplies the matching Rust type,
+the same way `spatial` supplies the geometry ones:
+
+```rust
+use toasty_driver_mssql::MssqlDateTimeOffset;
+
+#[derive(toasty::Model)]
+struct Event {
+    #[key]
+    id: i64,
+
+    happened_at: MssqlDateTimeOffset,
+}
+```
+
+The column is a `datetimeoffset`, and `ORDER BY` over it is chronological.
+`timestamp()` is the instant, `offset()` the offset it is displayed in, and
+`to_zoned()` the underlying value; `from_zoned` and `from_timestamp` build one.
+
+What it does **not** carry is the zone name: a `datetimeoffset` has a field for an
+offset, not for a name, so `America/New_York` reads back as `-04:00`. That is why
+this is a type of its own rather than a storage choice for `Zoned` — it never
+claims the name, so nothing is silently lost. If the name matters, store it
+alongside; if only the instant matters, `jiff::Timestamp` is simpler.
+
+A `String` or `jiff::Timestamp` field can also name the column directly with
+`#[column(type = "DATETIMEOFFSET")]`: a quoted name is a `db::Type::Custom`, so
+the macro's compatibility check is skipped and the name is rendered verbatim. A
+`Timestamp` then binds as `DATETIME2` and the server converts it, so the offset
+is always `+00:00`. A `Zoned` field cannot use this — its `[IANA]`-tagged text is
+rejected by the server's parser, which is what `MssqlDateTimeOffset` exists to
+avoid.
 
 ## Scalar functions
 
