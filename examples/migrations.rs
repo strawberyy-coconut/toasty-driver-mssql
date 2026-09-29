@@ -20,9 +20,13 @@
 //! since there is no `mssql` URL scheme for `Db::connect`:
 //!
 //! ```ignore
+//! let driver = Mssql::from_url(
+//!     "mssql://sa:Password1!@localhost:1433/mydb?encrypt=on&trust_certificate=true",
+//! )?;
+//!
 //! let db = toasty::Db::builder()
 //!     .models(toasty::models!(crate::*))
-//!     .build(Mssql::new(context))
+//!     .build(driver)
 //!     .await?;
 //!
 //! let cli = ToastyCli::with_config(db, config);

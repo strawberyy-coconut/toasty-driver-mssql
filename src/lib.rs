@@ -9,9 +9,24 @@
 //! as a query-planner hint. See [`capability`].
 //!
 //! There is no `mssql` scheme in `toasty::Db::builder().connect()`, so construct
-//! the driver and hand it to `build()`. The driver takes `mssql-tds`'s own
-//! connection configuration, re-exported here as [`ClientContext`], so every
-//! option that client offers is reachable through this driver:
+//! the driver from an `mssql://` URL and hand it to `build()`. The URL form is
+//! described by [`MssqlConnectOptions`], which is the same configuration as a
+//! value:
+//!
+//! ```text
+//! let driver = toasty_driver_mssql::Mssql::from_url(
+//!     "mssql://sa:Password1!@localhost:1433/testdb?encrypt=on&trust_certificate=true",
+//! )?;
+//!
+//! let db = toasty::Db::builder()
+//!     .models(toasty::models!(User))
+//!     .build(driver)
+//!     .await?;
+//! ```
+//!
+//! [`Mssql::new`] takes `mssql-tds`'s own connection configuration instead,
+//! re-exported here as [`ClientContext`], so every option that client offers is
+//! reachable through this driver without going through a URL:
 //!
 //! ```text
 //! let mut context = toasty_driver_mssql::ClientContext::with_data_source("tcp:localhost,1433");
@@ -20,10 +35,6 @@
 //! context.database = "testdb".to_owned();
 //!
 //! let driver = toasty_driver_mssql::Mssql::new(context);
-//! let db = toasty::Db::builder()
-//!     .models(toasty::models!(User))
-//!     .build(driver)
-//!     .await?;
 //! ```
 //!
 //! # Features
@@ -52,6 +63,7 @@ pub mod datetime_offset;
 mod driver;
 mod funcs;
 mod migration;
+pub mod options;
 #[cfg(feature = "spatial")]
 pub mod spatial;
 mod sql;
@@ -73,6 +85,7 @@ pub use mssql_tds::core::{EncryptionOptions, EncryptionSetting};
 #[cfg(feature = "datetimeoffset")]
 pub use datetime_offset::MssqlDateTimeOffset;
 pub use driver::Mssql;
+pub use options::MssqlConnectOptions;
 #[cfg(feature = "funcs-date")]
 pub use funcs::DatePart;
 #[cfg(feature = "funcs-date")]

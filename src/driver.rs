@@ -2,6 +2,7 @@
 //! operations.
 
 use std::borrow::Cow;
+use std::str::FromStr;
 
 use async_trait::async_trait;
 use mssql_tds::connection::client_context::ClientContext;
@@ -11,12 +12,23 @@ use toasty_core::{
     schema::{db::Migration, diff},
 };
 
-use crate::{capability, connection::Connection, migration, tds};
+use crate::{capability, connection::Connection, migration, options::MssqlConnectOptions, tds};
 
 /// A SQL Server [`Driver`] that speaks TDS through `mssql-tds`.
 ///
-/// It is built from `mssql-tds`'s own connection configuration, so every option
-/// that crate offers is reachable without this driver restating any of them:
+/// It is built either from an `mssql://` URL — [`from_url`](Self::from_url), or
+/// `str::parse` — or from `mssql-tds`'s own connection configuration, so every
+/// option that crate offers is reachable without this driver restating any of
+/// them:
+///
+/// ```no_run
+/// use toasty_driver_mssql::Mssql;
+///
+/// let driver = Mssql::from_url(
+///     "mssql://sa:Password1!@localhost:1433/mydb?encrypt=on&trust_certificate=true",
+/// )
+/// .expect("the URL must parse");
+/// ```
 ///
 /// ```no_run
 /// use toasty_driver_mssql::{ClientContext, EncryptionOptions, EncryptionSetting, Mssql};
@@ -38,6 +50,11 @@ pub struct Mssql {
     /// Reused for every connection the driver opens, so one set of credentials
     /// and one set of options serves the whole pool.
     context: ClientContext,
+
+    /// The URL the driver was built from, when it was built from one. A driver
+    /// built from a [`ClientContext`] was never given a URL, and reports its
+    /// data source instead.
+    url: Option<String>,
 }
 
 impl std::fmt::Debug for Mssql {
@@ -58,7 +75,41 @@ impl Mssql {
     /// Nothing is validated here: the configuration is handed to `mssql-tds`
     /// when a connection is opened, which is where it can be reported properly.
     pub fn new(context: ClientContext) -> Self {
-        Self { context }
+        Self {
+            context,
+            url: None,
+        }
+    }
+
+    /// Creates a driver from parsed [`MssqlConnectOptions`].
+    ///
+    /// The options name no URL, so [`Driver::url`] reports the data source they
+    /// describe.
+    pub fn from_options(options: &MssqlConnectOptions) -> Self {
+        Self {
+            context: options.to_client_context(),
+            url: None,
+        }
+    }
+
+    /// Creates a driver from an `mssql://` URL.
+    ///
+    /// The URL is kept, so [`Driver::url`] reports it again — which is what a
+    /// caller redacting a password for display needs.
+    ///
+    /// ```no_run
+    /// use toasty_driver_mssql::Mssql;
+    ///
+    /// let driver = Mssql::from_url("mssql://sa:Password1!@localhost:1433/mydb?encrypt=on")
+    ///     .expect("the URL must parse");
+    /// ```
+    pub fn from_url(url: &str) -> Result<Self> {
+        let options = MssqlConnectOptions::parse(url)?;
+
+        Ok(Self {
+            context: options.to_client_context(),
+            url: Some(url.to_owned()),
+        })
     }
 
     /// Connects to a different database on the same server.
@@ -80,13 +131,25 @@ impl Mssql {
     }
 }
 
+impl FromStr for Mssql {
+    type Err = Error;
+
+    /// Parses an `mssql://` URL, as [`Mssql::from_url`] does.
+    fn from_str(url: &str) -> Result<Self> {
+        Self::from_url(url)
+    }
+}
+
 #[async_trait]
 impl Driver for Mssql {
     fn url(&self) -> Cow<'_, str> {
-        // The driver need never have seen a URL: what it holds is `mssql-tds`'s
-        // data source (`tcp:host,1433`), which is the closest thing to one, and
-        // the same answer however the driver was built.
-        Cow::Borrowed(&self.context.data_source)
+        // A driver built from a `ClientContext` need never have seen a URL: what
+        // it holds is `mssql-tds`'s data source (`tcp:host,1433`), which is the
+        // closest thing to one. A driver built from a URL reports that instead.
+        match &self.url {
+            Some(url) => Cow::Borrowed(url),
+            None => Cow::Borrowed(&self.context.data_source),
+        }
     }
 
     fn capability(&self) -> &'static Capability {

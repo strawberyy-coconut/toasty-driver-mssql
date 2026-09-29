@@ -10,11 +10,11 @@ Microsoft SQL Server, speaking the TDS protocol directly through Microsoft's
 ## Usage
 
 Toasty's `Db::builder().connect(url)` dispatches on a hard-coded set of URL
-schemes, and none of them is `mssql`. Construct the driver and hand it to
-`build()` instead:
+schemes, and none of them is `mssql`. Build the driver from a `mssql://` URL and
+hand it to `build()` instead:
 
 ```rust,ignore
-use toasty_driver_mssql::{ClientContext, EncryptionOptions, EncryptionSetting, Mssql};
+use toasty_driver_mssql::Mssql;
 
 #[derive(Debug, toasty::Model)]
 struct User {
@@ -24,19 +24,13 @@ struct User {
     name: String,
 }
 
-let mut context = ClientContext::with_data_source("tcp:localhost,1433");
-context.user_name = "sa".to_owned();
-context.password = "Password1!".to_owned();
-context.database = "mydb".to_owned();
-context.encryption_options = EncryptionOptions {
-    mode: EncryptionSetting::On,
-    trust_server_certificate: true,
-    ..Default::default()
-};
+let driver = Mssql::from_url(
+    "mssql://sa:Password1!@localhost:1433/mydb?encrypt=on&trust_certificate=true",
+)?;
 
 let db = toasty::Db::builder()
     .models(toasty::models!(User))
-    .build(Mssql::new(context))
+    .build(driver)
     .await?;
 
 db.push_schema().await?;
@@ -50,22 +44,43 @@ toasty-driver-mssql = { git = "https://github.com/strawberyy-coconut/toasty-driv
 
 ### Connecting
 
-`Mssql::new` takes `mssql-tds`'s own connection configuration, a
-`ClientContext`, and the driver re-exports it along with the encryption types
-inside it. There is no second configuration format to learn: everything that
-client offers is reachable, and nothing is restated here.
+`Mssql::from_url` — or `str::parse` — takes a `mssql://` URL:
 
-The one thing worth knowing is that `ClientContext`'s default encryption mode is
-`Strict`, which is TDS 8.0 — SQL Server 2022 does not speak it, so a connection
-to it wants `EncryptionSetting::On`.
+```text
+mssql://user:password@host:port/database?parameters
+```
 
-The data source is `tcp:host,port`, the form `mssql-tds` expects:
+| Piece | Example | Notes |
+|---|---|---|
+| host, port | `localhost:1433` | The port defaults to 1433 |
+| credentials | `sa:Password1!` | Percent-decoded, so `p@ss` is written `p%40ss` |
+| database | `/mydb` | Also settable with `?database=` |
+| parameters | `?encrypt=on` | See below |
 
-| Piece | Example |
+| Parameter | Meaning |
 |---|---|
-| `data_source` | `tcp:localhost,1433` |
-| `user_name`, `password` | SQL authentication credentials |
-| `database` | The catalog to connect to |
+| `database` | Database name, overriding the URL path |
+| `encrypt` | `on`, `required`, `strict` or `off` (also `true`/`false`) |
+| `trust_certificate` | `true` skips server certificate validation |
+| `server_certificate` | Path to a DER or PEM certificate to pin |
+| `host_name_in_cert` | CN or SAN expected in the server certificate |
+| `application_name` | Application name reported to the server |
+| `connect_timeout` | Connection timeout in seconds |
+
+Unknown parameters are ignored, as the reference `sqlx` driver did, so a URL
+written for another client still parses.
+
+The default encryption mode is `Strict`, which is TDS 8.0 — SQL Server 2022 does
+not speak it, so a connection to one wants `?encrypt=on`.
+
+`MssqlConnectOptions` is the same configuration as a value: `parse` reads a URL
+into it, `with_database` points it somewhere else, and `Mssql::from_options`
+builds the driver from it.
+
+`Mssql::new` still takes `mssql-tds`'s own `ClientContext`, and the driver
+re-exports it along with the encryption types inside it, so everything that
+client offers is reachable without a URL at all. Its data source is
+`tcp:host,port`, the form `mssql-tds` expects.
 
 ## Examples
 
@@ -81,14 +96,18 @@ cargo run --example functions --features funcs  # the four function categories
 cargo run --example spatial --features spatial  # geometry and geography columns
 ```
 
-They read the server and credentials from the environment as separate values —
-`MSSQL_DATA_SOURCE`, `MSSQL_USER` and `MSSQL_PASSWORD` — which is the shape
-`mssql-tds` takes and what `.dev.env` supplies to the development container. From
-the host, point the data source at the published port instead:
+They read the connection from `DATABASE_URL`, which `.dev.env` supplies to the
+development container. From the host, point the URL at the published port
+instead:
 
 ```bash
-MSSQL_DATA_SOURCE=tcp:localhost,1434 cargo run --example crud
+DATABASE_URL='mssql://sa:Password1!@localhost:1434/testdb?encrypt=on&trust_certificate=true' \
+    cargo run --example crud
 ```
+
+The query parameters matter: the client's default mode is `Strict`, which TDS 8.0
+is and SQL Server 2022 is not, and the development container's certificate is
+self-signed.
 
 ## Migrations and the CLI
 
@@ -108,12 +127,13 @@ rather than `connect`:
 ```rust,ignore
 use toasty_cli::{Config, ToastyCli};
 
-let mut context = ClientContext::with_data_source("tcp:localhost,1433");
-// Credentials and encryption, as in the example above.
+let driver = Mssql::from_url(
+    "mssql://sa:Password1!@localhost:1433/mydb?encrypt=on&trust_certificate=true",
+)?;
 
 let db = toasty::Db::builder()
     .models(toasty::models!(crate::*))
-    .build(Mssql::new(context))
+    .build(driver)
     .await?;
 
 let cli = ToastyCli::with_config(db, Config::load()?);
@@ -208,9 +228,9 @@ values to `1` because T-SQL has no boolean expression type.
 ## Testing
 
 The repository's `compose.dev.yaml` provides SQL Server 2022, and `.dev.env`
-tells the tests where it is: `MSSQL_DATA_SOURCE`, `MSSQL_USER`,
-`MSSQL_PASSWORD`, and `MSSQL_DATABASE` as the fallback catalog. Each test
-substitutes its own database name for the last of those.
+tells the tests where it is: `DATABASE_URL`, whose database each test replaces
+with one of its own, because `reset_db` drops and recreates whatever it is
+pointed at.
 
 ```bash
 docker compose -f compose.dev.yaml up -d db

@@ -300,21 +300,17 @@ mod tests {
     /// The integration tests build the same thing in `tests/common`, which a
     /// unit test cannot reach, so the little it needs is repeated here.
     fn context() -> ClientContext {
-        use mssql_tds::core::{EncryptionOptions, EncryptionSetting};
+        use crate::MssqlConnectOptions;
 
-        let mut context = ClientContext::with_data_source(&env("MSSQL_DATA_SOURCE", "tcp:db,1433"));
-
-        context.user_name = env("MSSQL_USER", "sa");
-        context.password = env("MSSQL_PASSWORD", "Password1!");
-        context.database = env("MSSQL_DATABASE", "testdb");
-        context.encryption_options = EncryptionOptions {
-            mode: EncryptionSetting::On,
-            trust_server_certificate: true,
-            ..Default::default()
-        };
-
-        context
+        MssqlConnectOptions::parse(&env("DATABASE_URL", DEFAULT_DATABASE_URL))
+            .expect("DATABASE_URL must be a valid mssql:// URL")
+            .to_client_context()
     }
+
+    /// The development server, as the URL these tests connect with unless
+    /// `DATABASE_URL` says otherwise.
+    const DEFAULT_DATABASE_URL: &str =
+        "mssql://sa:Password1!@db:1433/testdb?encrypt=on&trust_certificate=true";
 
     /// An environment variable, or `default` when it is unset.
     fn env(name: &str, default: &str) -> String {
