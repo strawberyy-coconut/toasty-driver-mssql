@@ -65,8 +65,11 @@ const MSSQL_STORAGE_TYPES: StorageTypes = StorageTypes {
 
 /// SQL Server capabilities.
 ///
-/// Fields not overridden here are inherited from [`Capability::MYSQL`], the
-/// closest SQL backend.
+/// Every field is spelled out, with no `..Capability::MYSQL` fallback. Inheriting
+/// the nearest SQL driver's value answers for SQL Server on any flag added
+/// upstream later — a claim this driver never made — so listing them all makes a
+/// new upstream field a compile error here rather than a MySQL value quietly
+/// reused for T-SQL.
 pub static MSSQL: Capability = Capability {
     driver_name: "MSSQL",
 
@@ -87,6 +90,12 @@ pub static MSSQL: Capability = Capability {
         alter_column_properties_atomic: true,
     },
 
+    // T-SQL does not accept a data-modifying CTE in the shape the planner emits,
+    // so a conditional UPDATE/DELETE is lowered to a read-modify-write
+    // transaction: `SELECT ... WITH (UPDLOCK, ROWLOCK)` then the write, which
+    // `select_for_update` below supports.
+    cte_with_update: false,
+
     // T-SQL has `OUTPUT INSERTED.<cols>` on both INSERT and UPDATE, which is
     // what `RETURNING` lowers to. This also gives generated keys back without a
     // second round trip.
@@ -103,6 +112,9 @@ pub static MSSQL: Capability = Capability {
     upsert_branch_assignments: true,
     upsert_targeted_ignore: true,
 
+    // `<>` is an ordinary predicate in T-SQL, including on a primary key.
+    primary_key_ne_predicate: true,
+
     // `IDENTITY(1,1)`.
     auto_increment: true,
     max_auto_increment_integer_width: None,
@@ -112,24 +124,39 @@ pub static MSSQL: Capability = Capability {
 
     native_varchar: true,
 
-    // `Expr::StartsWith` is rewritten by the planner into a `LIKE` pattern with
-    // `%`, `_` and `!` escaped, which the renderer emits with `ESCAPE '!'`. The
-    // equivalent SQLite/MySQL flags are off because neither the GLOB nor the
-    // `BINARY ... LIKE` form exists in T-SQL.
+    // SQL backends never use DynamoDB-style index key conditions.
+    index_or_predicate: true,
+
+    // `starts_with` stays in the AST for this driver to render, via the
+    // `binary_like_starts_with` mode below: `Expr::StartsWith` becomes a `LIKE`
+    // pattern with `%`, `_` and `!` escaped, emitted with `ESCAPE '!'`. T-SQL has
+    // no dedicated prefix operator, so there is no GLOB and no `^@`.
+    native_starts_with: true,
     binary_like_starts_with: true,
     glob_starts_with: false,
 
     // T-SQL has `LIKE`; `ILIKE` is PostgreSQL-only.
     native_like: true,
+    native_ilike: false,
 
     // The planner drives SQL databases through `QuerySql`; the key-value `Scan`
-    // operation is not implemented.
+    // operation is not implemented. SQL backends report `scan_supports_sort` as
+    // `true` by convention, which is moot while `scan` is off.
     scan: false,
+    scan_supports_sort: true,
 
     // A previous page is the same query with the `ORDER BY` reversed and a
     // strict inequality on the cursor key, which T-SQL answers trivially. The
     // engine builds both cursors; the driver only has to run the query.
     backward_pagination: true,
+
+    // `ASC` places `NULL` before non-null values in T-SQL, so cursor predicates
+    // must use the same comparison placement the backend does.
+    sql_nulls_first_on_asc: true,
+
+    // `BIT` is a valid key/index column, so a `Bool` key needs no promotion to
+    // an integer column.
+    bool_key_type: true,
 
     // No native JSON column type before SQL Server 2025, and no named enum
     // types. `Binary` storage is not wired up yet either.
@@ -194,8 +221,6 @@ pub static MSSQL: Capability = Capability {
     // Reporting this keeps the planner from producing one, which is what the
     // JSON operations are written against.
     predicate_match_any: false,
-
-    ..Capability::MYSQL
 };
 
 #[cfg(test)]
